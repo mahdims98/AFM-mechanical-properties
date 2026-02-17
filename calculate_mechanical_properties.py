@@ -82,7 +82,7 @@ if __name__ == '__main__':
         print(f"  {key}: {value}")
 
     # --- Calculate Slope of Deflection vs Excitation ---
-    # Method 1: Interactive selection - user clicks on deflection-time plot to select range for slope on Deflection vs Indentation
+    # Method 1: Interactive selection - user clicks on deflection-time plot to select range for slope on Deflection vs Separation
     print("\n" + "="*60)
     print("SLOPE CALCULATION - Interactive Mode")
     print("="*60)

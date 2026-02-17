@@ -55,6 +55,7 @@ class MechanicalPropertyData:
         self.file_name_no_ext = re.sub(r'\.(txt|csv)$', '', self.base_name)
         self.base_dir = os.path.dirname(file_path)
         self.max_deflection_idx = None  # Index of maximum deflection point selected by user
+        self.contact_point_idx = None   # Index of contact point selected by user
         self.deformation = None  # Calculated deformation value
 
         # Load and process the data
@@ -68,7 +69,7 @@ class MechanicalPropertyData:
         """Calculate Force (nN) from Deflection (nm) and Spring Constant (N/m)."""
         if self.spring_constant_N_m is not None and self.data is not None:
             # 1 N/m = 1 nN/nm. So Deflection(nm) * k(N/m) = Force(nN)
-            self.data['Force_nN'] = self.data['Deflection_mV'] * self.spring_constant_N_m
+            self.data['Force_nN'] = self.data['Deflection_nm'] * self.spring_constant_N_m
             print("Force calculated (nN).")
 
     def set_processing_mode(self, use_force=False):
@@ -86,7 +87,7 @@ class MechanicalPropertyData:
         """Returns column name, data series, and unit label based on current mode."""
         if self.use_force and 'Force_nN' in self.data.columns:
             return 'Force_nN', self.data['Force_nN'], 'Force (nN)'
-        return 'Deflection_mV', self.data['Deflection_mV'], 'Deflection (nm)'
+        return 'Deflection_nm', self.data['Deflection_nm'], 'Deflection (nm)'
 
     def _load_data(self):
         """Load and preprocess the raw data from file."""
@@ -95,10 +96,10 @@ class MechanicalPropertyData:
         data.columns = ['Deflection']
 
         # Convert 'Deflection' column to numeric values in nm
-        data['Deflection_mV'] = data['Deflection'].apply(parse_voltage) * self.sensitivity_scaled
+        data['Deflection_nm'] = data['Deflection'].apply(parse_voltage) * self.sensitivity_scaled
 
         # Drop rows where parsing failed
-        data.dropna(subset=['Deflection_mV'], inplace=True)
+        data.dropna(subset=['Deflection_nm'], inplace=True)
 
         # Reset index after dropping NaN values
         data.reset_index(drop=True, inplace=True)
@@ -114,50 +115,75 @@ class MechanicalPropertyData:
 
     def select_phase_interactively(self):
         """
-        Display a plot for the user to select the time instant for excitation maximum.
-        Calculates the phase shift based on the selected point.
+        Display a plot for the user to select the time instant for excitation maximum
+        and the contact point.
+        Calculates the phase shift based on the selected peak point.
         """
-        print("Please click on the deflection plot to select the time instant for excitation maximum.")
-        print("Close the plot window after selecting the point.")
+        print("Please click on the deflection plot to select TWO points:")
+        print("1. The time instant for excitation maximum (Peak) - Red dashed line")
+        print("2. The contact point - Green dash-dot line")
+        print("Clicking a third time will reset the selections.")
+        print("Close the plot window after selecting both points.")
 
         # Create figure for initial selection
         fig_select, ax_select = plt.subplots(figsize=(12, 4))
-        ax_select.plot(self.data['Time_us'], self.data['Deflection_mV'],
+        ax_select.plot(self.data['Time_us'], self.data['Deflection_nm'],
                       label=self.file_name_no_ext, linewidth=1.1, color='blue')
-        ax_select.set_title(f'Deflection vs Time (Click to select time instant)')
+        ax_select.set_title(f'Deflection vs Time (Select Peak then Contact Point)')
         ax_select.set_xlabel('Time (µs)')
         ax_select.set_ylabel('Deflection (nm)')
         ax_select.grid(True)
         ax_select.legend()
 
-        # Store selected point
-        selected_time = {'time_us': None}
+        # Store selected points
+        selections = {'peak': None, 'contact': None}
+        lines = {'peak': None, 'contact': None}
 
         def onclick(event):
             if event.inaxes == ax_select and event.xdata is not None:
-                selected_time['time_us'] = event.xdata
-                # Remove previous vertical line if exists
-                for line in ax_select.lines[1:]:
-                    line.remove()
-                # Draw vertical line at selected point
-                ax_select.axvline(x=event.xdata, color='red', linestyle='--',
-                                linewidth=2, label=f'Selected: {event.xdata:.2f} µs')
-                ax_select.legend()
+                if selections['peak'] is None:
+                    # Select Peak
+                    selections['peak'] = event.xdata
+                    lines['peak'] = ax_select.axvline(x=event.xdata, color='red', linestyle='--',
+                                                    linewidth=2, label='Peak')
+                    print(f"Peak selected: {event.xdata:.2f} µs. Now select Contact Point.")
+                elif selections['contact'] is None:
+                    # Select Contact
+                    selections['contact'] = event.xdata
+                    lines['contact'] = ax_select.axvline(x=event.xdata, color='green', linestyle='-.',
+                                                       linewidth=2, label='Contact Point')
+                    print(f"Contact Point selected: {event.xdata:.2f} µs. Selections complete.")
+                else:
+                    # Reset and start with Peak
+                    print("Resetting selections. Peak updated.")
+                    selections['peak'] = event.xdata
+                    selections['contact'] = None
+                    
+                    if lines['peak']: lines['peak'].remove()
+                    if lines['contact']: lines['contact'].remove()
+                    
+                    lines['peak'] = ax_select.axvline(x=event.xdata, color='red', linestyle='--',
+                                                    linewidth=2, label='Peak')
+                    lines['contact'] = None
+
+                # Update legend
+                handles, labels = ax_select.get_legend_handles_labels()
+                by_label = dict(zip(labels, handles))
+                ax_select.legend(by_label.values(), by_label.keys())
                 fig_select.canvas.draw()
-                print(f"Selected time: {event.xdata:.2f} µs")
 
         # Connect click event
         cid = fig_select.canvas.mpl_connect('button_press_event', onclick)
         plt.tight_layout()
         plt.show()
 
-        # Calculate phase shift based on selection
-        if selected_time['time_us'] is None:
+        # Process Peak Selection (Phase Shift)
+        if selections['peak'] is None:
             print("No point selected. Using default phase shift of 0°.")
             self.phase_shift_deg = 0
             self.max_deflection_idx = None
         else:
-            selected_time_s = selected_time['time_us'] / 1e6
+            selected_time_s = selections['peak'] / 1e6
             phase_shift_rad = (np.pi / 2) - (2 * np.pi * self.excitation_freq_hz * selected_time_s)
             self.phase_shift_deg = np.degrees(phase_shift_rad)
             # Normalize to [-180, 180] range
@@ -165,8 +191,16 @@ class MechanicalPropertyData:
             print(f"Calculated phase shift: {self.phase_shift_deg:.2f}°")
 
             # Store the index of the maximum deflection point for deformation calculation
-            self.max_deflection_idx = (self.data['Time_us'] - selected_time['time_us']).abs().idxmin()
+            self.max_deflection_idx = (self.data['Time_us'] - selections['peak']).abs().idxmin()
             print(f"Maximum deflection index stored: {self.max_deflection_idx}")
+
+        # Process Contact Point Selection
+        if selections['contact'] is not None:
+            self.contact_point_idx = (self.data['Time_us'] - selections['contact']).abs().idxmin()
+            print(f"Contact point index stored: {self.contact_point_idx}")
+        else:
+            self.contact_point_idx = None
+            print("No contact point selected.")
 
     def set_phase_shift(self, phase_shift_deg):
         """
@@ -189,7 +223,7 @@ class MechanicalPropertyData:
 
         # Create figure for selection
         fig_select, ax_select = plt.subplots(figsize=(12, 4))
-        ax_select.plot(self.data['Time_us'], self.data['Deflection_mV'],
+        ax_select.plot(self.data['Time_us'], self.data['Deflection_nm'],
                       label=self.file_name_no_ext, linewidth=1.1, color='blue')
         ax_select.set_title('Deflection vs Time (Click to select region for DC offset)')
         ax_select.set_xlabel('Time (µs)')
@@ -233,20 +267,20 @@ class MechanicalPropertyData:
         idx1, idx2 = sorted(selected_points)
 
         # Calculate offset
-        region_data = self.data.loc[idx1:idx2, 'Deflection_mV']
+        region_data = self.data.loc[idx1:idx2, 'Deflection_nm']
         dc_offset = region_data.mean()
 
         print(f"\nSelected range: Index {idx1} to {idx2}")
         print(f"Calculated DC Offset: {dc_offset:.6f} nm")
 
         # Apply offset
-        self.data['Deflection_mV'] -= dc_offset
+        self.data['Deflection_nm'] -= dc_offset
         print("DC Offset removed from Deflection data.")
 
-        # Update Indentation if it exists
-        if 'Indentation' in self.data.columns:
-             self.data['Indentation'] = self.data['Excitation'] + self.data['Deflection_mV']
-             print("Indentation updated.")
+        # Update Separation if it exists
+        if 'Separation' in self.data.columns:
+             self.data['Separation'] = self.data['Excitation'] - self.data['Deflection_nm']
+             print("Separation updated.")
         
         # Update Force if it exists
         if self.spring_constant_N_m is not None:
@@ -254,8 +288,8 @@ class MechanicalPropertyData:
 
     def generate_excitation_signal(self):
         """
-        Generate the excitation signal with the current phase shift and calculate indentation.
-        Indentation is defined as Excitation - Deflection.
+        Generate the excitation signal with the current phase shift and calculate separation.
+        Separation is defined as Excitation - Deflection.
         """
         # Generate time array in seconds
         time_s = self.data['Index'] * self.sampling_period_s
@@ -271,8 +305,8 @@ class MechanicalPropertyData:
             2 * np.pi * self.excitation_freq_hz * time_s + phase_shift_rad
         )
 
-        # Calculate Indentation
-        self.data['Indentation'] = self.data['Excitation'] + self.data['Deflection_mV']
+        # Calculate Separation
+        self.data['Separation'] = self.data['Excitation'] - self.data['Deflection_nm']
 
     def export_to_csv(self, output_path=None):
         """
@@ -290,9 +324,9 @@ class MechanicalPropertyData:
         # Create export dataframe
         export_data = pd.DataFrame({
             'Index': self.data['Index'],
-            'Deflection_nm': self.data['Deflection_mV'],
+            'Deflection_nm': self.data['Deflection_nm'],
             'Excitation': self.data['Excitation'],
-            'Indentation': self.data['Indentation']
+            'Separation': self.data['Separation']
         })
 
         # Determine output path
@@ -341,10 +375,10 @@ class MechanicalPropertyData:
         ax2.set_ylabel('Excitation (nm)')
         ax2.grid(True)
 
-        # Plot 3: Signal vs Indentation
-        ax3.plot(self.data['Indentation'], signal_data, linewidth=1.1, color='green')
-        ax3.set_title(f'{plot_title} - {unit_label} vs Indentation')
-        ax3.set_xlabel('Indentation (nm)')
+        # Plot 3: Signal vs Separation
+        ax3.plot(self.data['Separation'], signal_data, linewidth=1.1, color='green')
+        ax3.set_title(f'{plot_title} - {unit_label} vs Separation')
+        ax3.set_xlabel('Separation (nm)')
         ax3.set_ylabel(unit_label)
         ax3.grid(True)
 
@@ -403,9 +437,9 @@ class MechanicalPropertyData:
 
         col_name, signal_data, unit_label = self._get_signal_info()
         fig, ax = plt.subplots(figsize=(8, 8))
-        ax.plot(self.data['Indentation'], signal_data, linewidth=1.1, color='green')
-        ax.set_title(f'{unit_label} vs Indentation (Hysteresis)')
-        ax.set_xlabel('Indentation (nm)')
+        ax.plot(self.data['Separation'], signal_data, linewidth=1.1, color='green')
+        ax.set_title(f'{unit_label} vs Separation (Hysteresis)')
+        ax.set_xlabel('Separation (nm)')
         ax.set_ylabel(unit_label)
         ax.grid(True)
         plt.tight_layout()
@@ -518,7 +552,7 @@ class MechanicalPropertyData:
 
     def calculate_slope(self, idx1=None, idx2=None, interactive=True):
         """
-        Calculate the slope of the deflection vs indentation plot between two indices
+        Calculate the slope of the deflection vs separation plot between two indices
         using least squares linear regression with zero intercept (through origin).
 
         Args:
@@ -557,16 +591,16 @@ class MechanicalPropertyData:
         col_name, signal_data, unit_label = self._get_signal_info()
 
         # Extract data for the selected range
-        indentation_range = self.data.loc[idx1:idx2, 'Indentation'].values
+        separation_range = self.data.loc[idx1:idx2, 'Separation'].values
         signal_range = self.data.loc[idx1:idx2, col_name].values
 
-        # Perform least squares linear fit with zero intercept: deflection = slope * indentation
+        # Perform least squares linear fit with zero intercept: deflection = slope * separation
         # For zero-intercept regression, slope = sum(x*y) / sum(x^2)
-        slope = np.sum(indentation_range * signal_range) / np.sum(indentation_range**2)
+        slope = np.sum(separation_range * signal_range) / np.sum(separation_range**2)
         intercept = 0  # Forced to zero
 
         # Calculate fitted values and residuals
-        signal_fit = slope * indentation_range
+        signal_fit = slope * separation_range
         residuals = signal_range - signal_fit
         ss_res = np.sum(residuals**2)  # Residual sum of squares
         ss_tot = np.sum(signal_range**2)  # Total sum of squares (for zero-intercept model)
@@ -574,8 +608,8 @@ class MechanicalPropertyData:
 
         # Calculate standard error of the slope (for zero-intercept model)
         n = len(excitation_range)
-        if n > 1 and np.sum(indentation_range**2) > 0:
-            std_error = np.sqrt(ss_res / (n - 1)) / np.sqrt(np.sum(indentation_range**2))
+        if n > 1 and np.sum(separation_range**2) > 0:
+            std_error = np.sqrt(ss_res / (n - 1)) / np.sqrt(np.sum(separation_range**2))
         else:
             std_error = np.nan
 
@@ -588,7 +622,7 @@ class MechanicalPropertyData:
             'idx1': idx1,
             'idx2': idx2,
             'num_points': n,
-            'indentation_range': indentation_range,
+            'separation_range': separation_range,
             'signal_range': signal_range,
             'signal_fit': signal_fit,
             'unit_label': unit_label
@@ -609,7 +643,7 @@ class MechanicalPropertyData:
 
     def calculate_slope_with_intercept(self, idx1=None, idx2=None, interactive=True):
         """
-        Calculate the slope and intercept of the deflection vs indentation plot
+        Calculate the slope and intercept of the deflection vs separation plot
         using standard least squares linear regression (y = mx + c).
 
         Args:
@@ -636,16 +670,16 @@ class MechanicalPropertyData:
         col_name, signal_data, unit_label = self._get_signal_info()
 
         # Use .values to get numpy arrays for efficient calculation
-        indentation_range = self.data.loc[idx1:idx2, 'Indentation'].values
+        separation_range = self.data.loc[idx1:idx2, 'Separation'].values
         signal_range = self.data.loc[idx1:idx2, col_name].values
-        n = len(indentation_range)
+        n = len(separation_range)
 
         # Implement the standard linear regression formulas directly
         # slope = (n*sum(xy) - sum(x)*sum(y)) / (n*sum(x^2) - (sum(x))^2)
-        sum_xy = np.sum(indentation_range * signal_range)
-        sum_x = np.sum(indentation_range)
+        sum_xy = np.sum(separation_range * signal_range)
+        sum_x = np.sum(separation_range)
         sum_y = np.sum(signal_range)
-        sum_x_sq = np.sum(indentation_range**2)
+        sum_x_sq = np.sum(separation_range**2)
 
         print("DEBUGGGGGGGGG")
         print(n * sum_xy, sum_x * sum_y, n * sum_x_sq, sum_x**2)
@@ -670,7 +704,7 @@ class MechanicalPropertyData:
         intercept = (sum_y / n) - slope * (sum_x / n)
 
         # Calculate fitted values and R-squared
-        signal_fit = slope * indentation_range + intercept
+        signal_fit = slope * separation_range + intercept
         ss_res = np.sum((signal_range - signal_fit)**2)
         ss_tot = np.sum((signal_range - np.mean(signal_range))**2)
         r_squared = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
@@ -682,7 +716,7 @@ class MechanicalPropertyData:
             'idx1': idx1,
             'idx2': idx2,
             'num_points': n,
-            'indentation_range': indentation_range.flatten(),
+            'separation_range': separation_range.flatten(),
             'signal_range': signal_range,
             'signal_fit': signal_fit,
             'unit_label': unit_label
@@ -691,7 +725,7 @@ class MechanicalPropertyData:
         print("\n" + "="*60)
         print("SLOPE CALCULATION RESULTS (With Intercept Model)")
         print("="*60)
-        print(f"Index range: {idx1} to {idx2} ({len(indentation_range)} points)")
+        print(f"Index range: {idx1} to {idx2} ({len(separation_range)} points)")
         print(f"Slope (m): {slope:.6e} {unit_label.split(' ')[0]}/nm")
         print(f"Intercept: {intercept:.6f} nm")
         print(f"R-squared: {r_squared:.6f}")
@@ -701,7 +735,7 @@ class MechanicalPropertyData:
 
     def plot_slope_fit(self, slope_results):
         """
-        Visualize the slope fit on the deflection vs indentation plot.
+        Visualize the slope fit on the deflection vs separation plot.
 
         Args:
             slope_results (dict): Results dictionary from calculate_slope()
@@ -717,26 +751,26 @@ class MechanicalPropertyData:
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 6))
 
-        # Plot 1: Full deflection vs indentation with highlighted region
-        ax1.plot(self.data['Indentation'], signal_data,
+        # Plot 1: Full deflection vs separation with highlighted region
+        ax1.plot(self.data['Separation'], signal_data,
                 linewidth=1.1, color='lightgray', alpha=0.5, label='Full data')
-        ax1.plot(slope_results['indentation_range'], slope_results['signal_range'],
+        ax1.plot(slope_results['separation_range'], slope_results['signal_range'],
                 linewidth=2, color='blue', marker='o', markersize=3, label='Selected range')
-        ax1.set_title(f'{unit_label} vs Indentation (Full View)')
-        ax1.set_xlabel('Indentation (nm)')
+        ax1.set_title(f'{unit_label} vs Separation (Full View)')
+        ax1.set_xlabel('Separation (nm)')
         ax1.set_ylabel(unit_label)
         ax1.grid(True)
         ax1.legend()
 
         # Plot 2: Zoomed view with linear fit
-        ax2.scatter(slope_results['indentation_range'], slope_results['signal_range'],
+        ax2.scatter(slope_results['separation_range'], slope_results['signal_range'],
                    color='blue', alpha=0.6, s=20, label='Data points')
-        ax2.plot(slope_results['indentation_range'], slope_results['signal_fit'],
+        ax2.plot(slope_results['separation_range'], slope_results['signal_fit'],
                 color='red', linewidth=2, linestyle='--', label='Linear fit')
         ax2.set_title(f'Linear Fit (Slope = {slope_results["slope"]:.4f}, R² = {slope_results["r_squared"]:.4f})')
         title = f'Linear Fit (Slope = {slope_results["slope"]:.4f}, R² = {slope_results["r_squared"]:.4f})'
         ax2.set_title(title)
-        ax2.set_xlabel('Indentation (nm)')
+        ax2.set_xlabel('Separation (nm)')
         ax2.set_ylabel(unit_label)
         ax2.grid(True)
         ax2.legend()
@@ -754,7 +788,7 @@ class MechanicalPropertyData:
 
     def calculate_deformation(self, percentage=15):
         """
-        Calculate the deformation based on the change in indentation between the
+        Calculate the deformation based on the change in separation between the
         maximum deflection point and a specified percentage of the absolute maximum deflection.
 
         Args:
@@ -783,11 +817,11 @@ class MechanicalPropertyData:
         # Find index with minimum absolute difference to target value
         idx_percentage = (approach_data - target_val).abs().idxmin()
 
-        # 4. Calculate Deformation: Change in Indentation between these two points
-        indentation_at_max = self.data.loc[max_idx, 'Indentation']
-        indentation_at_percentage = self.data.loc[idx_percentage, 'Indentation']
+        # 4. Calculate Deformation: Change in Separation between these two points
+        separation_at_max = self.data.loc[max_idx, 'Separation']
+        separation_at_percentage = self.data.loc[idx_percentage, 'Separation']
         
-        deformation = abs(indentation_at_max - indentation_at_percentage)
+        deformation = abs(separation_at_max - separation_at_percentage)
         self.deformation = deformation
 
         # Get signal values for plotting
@@ -804,8 +838,8 @@ class MechanicalPropertyData:
             'unit_label': unit_label,
             'time_max': self.data.loc[max_idx, 'Time_us'],
             'time_percentage': self.data.loc[idx_percentage, 'Time_us'],
-            'indentation_max': indentation_at_max,
-            'indentation_percentage': indentation_at_percentage
+            'separation_max': separation_at_max,
+            'separation_percentage': separation_at_percentage
         }
 
         # Print results
@@ -816,13 +850,13 @@ class MechanicalPropertyData:
         print(f"  Index: {max_idx}")
         print(f"  Time: {results['time_max']:.2f} µs")
         print(f"  {unit_label.split(' ')[0]}: {val_max:.4f}")
-        print(f"  Indentation: {indentation_at_max:.4f} nm")
+        print(f"  Separation: {separation_at_max:.4f} nm")
         print(f"\nReference point ({percentage}% of absolute max {unit_label.split(' ')[0]}):")
         print(f"  Index: {idx_percentage}")
         print(f"  Time: {results['time_percentage']:.2f} µs")
         print(f"  {unit_label.split(' ')[0]}: {val_percentage:.4f}")
-        print(f"  Indentation: {indentation_at_percentage:.4f} nm")
-        print(f"\nCalculation: |Indentation(Max) - Indentation({percentage}%)|")
+        print(f"  Separation: {separation_at_percentage:.4f} nm")
+        print(f"\nCalculation: |Separation(Max) - Separation({percentage}%)|")
         print(f"DEFORMATION: {deformation:.4f} nm")
         print("="*60 + "\n")
 
@@ -845,12 +879,12 @@ class MechanicalPropertyData:
         # Find minimum value (Adhesion)
         min_idx = signal_data.idxmin()
         min_value = signal_data[min_idx]
-        indentation_at_min = self.data.loc[min_idx, 'Indentation']
+        separation_at_min = self.data.loc[min_idx, 'Separation']
 
         results = {
             'min_idx': min_idx,
             'adhesion_value': min_value,
-            'indentation_at_min': indentation_at_min,
+            'separation_at_min': separation_at_min,
             'unit_label': unit_label
         }
 
@@ -860,14 +894,14 @@ class MechanicalPropertyData:
         print(f"Minimum {unit_label.split(' ')[0]} (Adhesion):")
         print(f"  Index: {min_idx}")
         print(f"  Value: {min_value:.4f}")
-        print(f"  Indentation: {indentation_at_min:.4f} nm")
+        print(f"  Separation: {separation_at_min:.4f} nm")
         print("="*60 + "\n")
 
         return results
 
     def plot_adhesion(self, adhesion_results=None):
         """
-        Visualize the adhesion (minimum force point) on the signal vs indentation plot.
+        Visualize the adhesion (minimum force point) on the signal vs separation plot.
 
         Args:
             adhesion_results (dict, optional): Results from calculate_adhesion().
@@ -880,11 +914,11 @@ class MechanicalPropertyData:
         fig, ax = plt.subplots(figsize=(8, 8))
 
         # Plot Hysteresis
-        ax.plot(self.data['Indentation'], signal_data,
+        ax.plot(self.data['Separation'], signal_data,
                 linewidth=1.1, color='green', label='Hysteresis curve')
 
         # Mark Adhesion point
-        ax.plot(adhesion_results['indentation_at_min'],
+        ax.plot(adhesion_results['separation_at_min'],
                 adhesion_results['adhesion_value'],
                 'ro', markersize=10, label='Adhesion (Min Point)')
 
@@ -893,13 +927,13 @@ class MechanicalPropertyData:
         unit = unit_label.split('(')[-1].replace(')', '') if '(' in unit_label else ""
 
         ax.annotate(f"Adhesion\n{adhesion_results['adhesion_value']:.4f} {unit}",
-                    xy=(adhesion_results['indentation_at_min'], adhesion_results['adhesion_value']),
+                    xy=(adhesion_results['separation_at_min'], adhesion_results['adhesion_value']),
                     xytext=(0, -40), textcoords='offset points',
                     ha='center', color='red', fontweight='bold',
                     arrowprops=dict(arrowstyle='->', color='red'))
 
-        ax.set_title(f'{unit_label} vs Indentation - Adhesion')
-        ax.set_xlabel('Indentation (nm)')
+        ax.set_title(f'{unit_label} vs Separation - Adhesion')
+        ax.set_xlabel('Separation (nm)')
         ax.set_ylabel(unit_label)
         ax.grid(True)
         ax.legend()
@@ -955,7 +989,7 @@ class MechanicalPropertyData:
         
         # Define the specific retraction segment (Peak -> Adhesion)
         retract_data = signal_data.loc[max_idx:min_idx]
-        retract_indentation = self.data.loc[max_idx:min_idx, 'Indentation']
+        retract_separation = self.data.loc[max_idx:min_idx, 'Separation']
 
         val_peak = signal_data[max_idx]
         val_adhesion = signal_data[min_idx]
@@ -977,14 +1011,14 @@ class MechanicalPropertyData:
             return None
 
         y_fit_data = retract_data[mask] # Force/Signal
-        x_raw_indentation = retract_indentation[mask]
+        x_raw_separation = retract_separation[mask]
 
         # Prepare for Fitting
         # DMT Model: F = 4/3 * E * sqrt(R * delta^3) + F_adh
         # Linear form: (F - F_adh) = (4/3 * E * sqrt(R)) * delta^1.5
-        # We assume delta = 0 at the adhesion point (pull-off), so we shift indentation.
-        indentation_at_adhesion = self.data.loc[min_idx, 'Indentation']
-        delta = x_raw_indentation - indentation_at_adhesion
+        # We assume delta = 0 at the adhesion point (pull-off), so we shift separation.
+        separation_at_adhesion = self.data.loc[min_idx, 'Separation']
+        delta = x_raw_separation - separation_at_adhesion
         
         # Ensure delta is positive (it should be, as we are 'above' the pull-off point)
         delta = delta.abs() 
@@ -1059,7 +1093,7 @@ class MechanicalPropertyData:
             'X': X,
             'Y': Y,
             'Y_fit': Y_pred,
-            'indentation_fit': x_raw_indentation,
+            'separation_fit': x_raw_separation,
             'signal_fit': y_fit_data,
             'high_factor_pct': high_factor_pct,
             'low_range_pct': low_range_pct
@@ -1080,17 +1114,17 @@ class MechanicalPropertyData:
 
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-        # Plot 1: Signal vs Indentation (Physical Space)
+        # Plot 1: Signal vs Separation (Physical Space)
         # Plot full data
-        ax1.plot(self.data['Indentation'], signal_data,
+        ax1.plot(self.data['Separation'], signal_data,
                  color='lightgray', label='Full Cycle', linewidth=1)
 
         # Highlight fitted region
-        ax1.scatter(dmt_results['indentation_fit'], dmt_results['signal_fit'],
+        ax1.scatter(dmt_results['separation_fit'], dmt_results['signal_fit'],
                     color='blue', s=10, label='Fitted Region')
 
         ax1.set_title(f'DMT Fit Region (High: {dmt_results["high_factor_pct"]}% Peak, Low: {dmt_results["low_range_pct"]}% Range)')
-        ax1.set_xlabel('Indentation (nm)')
+        ax1.set_xlabel('Separation (nm)')
         ax1.set_ylabel(unit_label)
         ax1.legend()
         ax1.grid(True, alpha=0.3)
@@ -1125,7 +1159,7 @@ class MechanicalPropertyData:
     def plot_deformation(self, deformation_results=None):
         """
         Visualize the deformation measurement on the deflection vs time plot
-        and deflection vs indentation plot.
+        and deflection vs separation plot.
 
         Args:
             deformation_results (dict, optional): Results from calculate_deformation().
@@ -1167,41 +1201,41 @@ class MechanicalPropertyData:
         ax1.grid(True)
         ax1.legend()
 
-        # Plot 2: Deflection vs Indentation with marked points and deformation arrow
-        ax2.plot(self.data['Indentation'], signal_data,
+        # Plot 2: Deflection vs Separation with marked points and deformation arrow
+        ax2.plot(self.data['Separation'], signal_data,
                 linewidth=1.1, color='green', label='Hysteresis curve')
 
         # Mark maximum deflection point
-        ind_max = deformation_results['indentation_max']
-        ax2.plot(ind_max,
+        sep_max = deformation_results['separation_max']
+        ax2.plot(sep_max,
                 deformation_results['val_max'],
                 'ro', markersize=10, label='Max Point')
 
         # Mark minimum deflection point
-        ind_p = deformation_results['indentation_percentage']
-        ax2.plot(ind_p,
+        sep_p = deformation_results['separation_percentage']
+        ax2.plot(sep_p,
                 deformation_results['val_percentage'],
                 'go', markersize=10, label=f'{deformation_results["percentage"]}% Point')
 
         # Draw arrow showing deformation
         # Note: Deformation is calculated from Deflection, but plotted on Signal axis (which might be Force)
         ax2.annotate('',
-                    xy=(ind_max,
+                    xy=(sep_max,
                         (deformation_results['val_max'] + deformation_results['val_percentage']) / 2),
-                    xytext=(ind_p,
+                    xytext=(sep_p,
                            (deformation_results['val_max'] + deformation_results['val_percentage']) / 2),
                     arrowprops=dict(arrowstyle='<->', color='red', lw=2))
 
         # Add text showing deformation value
-        mid_indentation = (ind_max + ind_p) / 2
+        mid_separation = (sep_max + sep_p) / 2
         mid_signal = (deformation_results['val_max'] + deformation_results['val_percentage']) / 2
-        ax2.text(mid_indentation, mid_signal,
+        ax2.text(mid_separation, mid_signal,
                 f"Deformation\n{deformation_results['deformation']:.4f} nm",
                 ha='center', va='bottom', fontsize=10, color='red',
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-        ax2.set_title(f'{unit_label} vs Indentation - Deformation = {deformation_results["deformation"]:.4f} nm')
-        ax2.set_xlabel('Indentation (nm)')
+        ax2.set_title(f'{unit_label} vs Separation - Deformation = {deformation_results["deformation"]:.4f} nm')
+        ax2.set_xlabel('Separation (nm)')
         ax2.set_ylabel(unit_label)
         ax2.grid(True)
         ax2.legend()

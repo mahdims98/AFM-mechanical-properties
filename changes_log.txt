@@ -1,0 +1,32 @@
+CHANGE LOG - Mechanical Property Calculation Updates
+====================================================
+
+1. DMT Modulus Calculation Update (mechanical_property_data.py)
+   - Modified `calculate_young_modulus_dmt` to accept `sample_poisson_ratio`, `cantilever_poisson_ratio`, `cantilever_E_GPa`, and `neglect_cantilever_effect`.
+   - Updated calculation logic:
+     * Calculate `E_reduced` from the slope of the fit.
+     * Calculate `E_sample` using the formula: 1/E_reduced = (1-v_sample^2)/E_sample + (1-v_cantilever^2)/E_cantilever.
+   - Updated `plot_dmt_fit` to display both `E_sample` and `E_reduced`.
+
+2. Dissipation/Hysteresis Update (mechanical_property_data.py)
+   - Modified `calculate_hysteresis_area` to calculate the integral of Force vs Excitation (previously Force vs Indentation).
+   - Updated `plot_hysteresis_area` to visualize the hysteresis loop against the Excitation axis.
+   - Fixed a bug where the plotting function expected 'forward_excitation' keys but the calculation returned 'forward_separation'.
+
+3. Terminology Updates (Global)
+   - Renamed all occurrences of "Indentation" to "Separation" in both `mechanical_property_data.py` and `calculate_mechanical_properties.py`.
+   - Renamed internal dataframe column `Deflection_mV` to `Deflection_nm` to accurately reflect that the data is scaled by sensitivity.
+
+4. Interactive Selection Updates (mechanical_property_data.py)
+   - Updated `select_phase_interactively` to allow sequential selection of two points:
+     1. Peak point (for phase shift calculation).
+     2. Contact point (stored in `self.contact_point_idx`).
+
+5. Main Script Updates (calculate_mechanical_properties.py)
+   - Added configuration variables for Poisson ratios and Cantilever Young's Modulus.
+   - Updated the `calculate_young_modulus_dmt` function call to pass the new parameters.
+   - Updated comments and print statements to reflect the "Separation" terminology.
+
+6. Bug Fixes
+   - Corrected variable names in `calculate_hysteresis_area` to ensure consistency with the plotting function.
+   - Ensured `Deflection_nm` is used consistently for force calculations.

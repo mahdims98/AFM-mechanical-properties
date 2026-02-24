@@ -30,7 +30,7 @@ if __name__ == '__main__':
     filename = "cycle_100_data.csv"
     file_path = os.path.join(directory, filename)
 
-    excitation_amp = 150          # Excitation amplitude in nanometers (100 nm)
+    excitation_amp = 75          # Excitation amplitude in nanometers (100 nm)
     sampling_frequency = 6.25e6         # Sampling frequency in Hz (1 MHz)
     sensitivity = 35.17                 # Sensitivity in nm/V
     tip_radius = 2                   # Tip radius in nm for Young's Modulus calculation

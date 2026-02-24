@@ -306,7 +306,7 @@ class MechanicalPropertyData:
         )
 
         # Calculate Separation
-        self.data['Separation'] = self.data['Excitation'] - self.data['Deflection_nm']
+        self.data['Separation'] = self.data['Excitation'] + self.data['Deflection_nm']
 
     def export_to_csv(self, output_path=None):
         """
